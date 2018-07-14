@@ -5,7 +5,7 @@ A Cocoa Touch framework to facilitate the camera usage in iOS
 
 //TODO
 
-#TODOs
+# TODOs
 
 * Allow to change camera in runtime.
 * Implement photo capture.
