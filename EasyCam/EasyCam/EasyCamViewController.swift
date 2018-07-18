@@ -10,9 +10,21 @@ import UIKit
 import AVFoundation
 
 @objc public protocol EasyCamDelegate : NSObjectProtocol {
+    /**
+     This method will be called in the main queue.
+    */
     func easyCamDidFail(error : Error)
+    /**
+     If implemented, this method will be called in a serial thread
+     */
     @objc optional func easyCamDidCapture(image: UIImage);
+    /**
+     If implemented, this method will be called in a serial thread
+     */
     @objc optional func easyCamDidCapture(sampleBuffer: CMSampleBuffer);
+    /**
+     If implemented, this method will be called in a serial thread
+     */
     @objc optional func easyCamDidCaptureStill(image: UIImage);
 }
 
@@ -21,9 +33,41 @@ public enum EasyCamError : Error {
     case camSetupError(String)
 }
 
+public struct EasyCamCaptureSettings {
+    
+    public enum VideoGravity : String {
+        case resizeAspect = "AVLayerVideoGravityResizeAspect"
+        case resizeAspectFill = "AVLayerVideoGravityResizeAspectFill"
+        case resize = "AVLayerVideoGravityResize"
+    }
+    
+    public let cameraPosition : AVCaptureDevice.Position
+    /**
+     A constant value indicating the quality level or bitrate of the output.
+    */
+    public let sessionPreset : AVCaptureSession.Preset?
+    /**
+    Defines how the video is displayed within an AVCaptureVideoPreviewLayer bounds rect.
+    */
+    public let videoGravity: VideoGravity
+    
+    public init(cameraPosition: AVCaptureDevice.Position, sessionPreset: AVCaptureSession.Preset?, videoGravity: VideoGravity?) {
+        self.cameraPosition = cameraPosition
+        self.sessionPreset = sessionPreset;
+        if videoGravity == nil {
+            self.videoGravity = .resizeAspect
+        } else {
+            self.videoGravity = videoGravity!
+        }
+    }
+    
+}
+
 public class EasyCamViewController: UIViewController {
     
     public weak var delegate : EasyCamDelegate?
+    
+    private let delegateQueue = DispatchQueue(label: "delegate queue", qos: DispatchQoS.default, attributes: [], autoreleaseFrequency: DispatchQueue.AutoreleaseFrequency.inherit, target: nil)
     
     private let semaphore = DispatchSemaphore(value: 2);
     
@@ -34,6 +78,16 @@ public class EasyCamViewController: UIViewController {
     private let videoDeviceOutput = AVCaptureVideoDataOutput()
     
     private var videoDeviceInput : AVCaptureDeviceInput!
+    
+    private var hasMultipleCameras = false;
+    
+    public var captureSettings : EasyCamCaptureSettings? {
+        get {
+            return captureVideoSettings
+        }
+    }
+    
+    private var captureVideoSettings : EasyCamCaptureSettings?
     
     private var frameView = Bundle(for: EasyCamViewController.self).loadNibNamed("EasyCamFrameView", owner: self, options: nil)?.first as! EasyCamFrameView
     
@@ -47,9 +101,19 @@ public class EasyCamViewController: UIViewController {
     
     private var sessionSetup : SessionSetupResult = .failed;
     
-    public convenience init(frameView : EasyCamFrameView) {
+    //KVO and Observers
+    private var keyValueObservations = [NSKeyValueObservation]()
+    
+    
+    public convenience init(captureSettings: EasyCamCaptureSettings?) {
+        self.init()
+        self.captureVideoSettings = captureSettings
+    }
+    
+    public convenience init(frameView : EasyCamFrameView, captureSettings: EasyCamCaptureSettings?) {
         self.init()
         self.frameView = frameView
+        self.captureVideoSettings = captureSettings
     }
     
     override public func viewDidLoad() {
@@ -70,6 +134,8 @@ public class EasyCamViewController: UIViewController {
         
         self.frameView.previewView.session = self.session
         
+        self.frameView.previewView.videoPreviewLayer.videoGravity = AVLayerVideoGravity(rawValue: self.captureVideoSettings!.videoGravity.rawValue)
+        
         self.sessionQueue.async {
             self.configureSession()
         }
@@ -85,8 +151,9 @@ public class EasyCamViewController: UIViewController {
             switch self.sessionSetup {
             case .success:
                 debugPrint("success")
+                self.addObservers()
                 self.session.startRunning()
-                self.sessionIsRunning = true
+                self.sessionIsRunning = self.session.isRunning
             case .notAuthorized:
                 debugPrint("notAuthorized")
                 self.mainQueue.async {
@@ -106,6 +173,7 @@ public class EasyCamViewController: UIViewController {
         if sessionIsRunning {
             self.sessionQueue.async {
                 self.session.stopRunning()
+                self.removeObservers()
             }
         }
     }
@@ -114,13 +182,17 @@ public class EasyCamViewController: UIViewController {
         
         self.session.beginConfiguration()
         
-        guard let device = EasyCamViewController.device(with: .video, preferringPosition: AVCaptureDevice.Position.back) else {
+        let cameraPosition = self.captureSettings != nil ? self.captureSettings!.cameraPosition : AVCaptureDevice.Position.back;
+        
+        guard let device = EasyCamViewController.device(with: .video, preferringPosition: cameraPosition) else {
             return
         }
         
         do {
             let videoDeviceInput = try AVCaptureDeviceInput(device: device)
+           
             self.videoDeviceOutput.videoSettings = [kCVPixelBufferPixelFormatTypeKey as AnyHashable as! String: NSNumber(value: kCVPixelFormatType_32BGRA)]
+            
             self.videoDeviceOutput.setSampleBufferDelegate(self, queue: self.sessionQueue)
             
             if session.canAddOutput(self.videoDeviceOutput) {
@@ -138,6 +210,12 @@ public class EasyCamViewController: UIViewController {
                 debugPrint("could not add device output to the session")
             }
             
+            if let customSessionPreset = self.captureVideoSettings?.sessionPreset {
+                if self.session.canSetSessionPreset(customSessionPreset) {
+                    self.session.sessionPreset = customSessionPreset
+                }
+            }
+            
             mainQueue.async {
                 
                 /*
@@ -150,7 +228,6 @@ public class EasyCamViewController: UIViewController {
                  Use the status bar orientation as the initial video orientation. Subsequent orientation changes are
                  handled by CameraViewController.viewWillTransition(to:with:).
                  */
-                
                 let initialOrientation = AVCaptureVideoOrientation.portrait;
                 self.frameView.previewView.videoPreviewLayer.connection?.videoOrientation = initialOrientation;
             }
@@ -184,7 +261,7 @@ extension EasyCamViewController : AVCaptureVideoDataOutputSampleBufferDelegate {
         }
         
         if (self.delegate?.responds(to: #selector(self.delegate?.easyCamDidCapture(sampleBuffer:))))! {
-            DispatchQueue.global().async {
+            self.delegateQueue.async {
                 self.delegate?.easyCamDidCapture?(sampleBuffer: sampleBuffer)
             }
         }
@@ -195,7 +272,7 @@ extension EasyCamViewController : AVCaptureVideoDataOutputSampleBufferDelegate {
             let context = CIContext(options: nil)
             if let capturedImage = context.createCGImage(ciImage, from: CGRect(x: 0, y: 0, width: CVPixelBufferGetWidth(pixedBuffer), height: CVPixelBufferGetHeight(pixedBuffer))){
                 let uiImage = UIImage(cgImage: capturedImage)
-                self.mainQueue.async {
+                self.delegateQueue.async {
                     self.delegate?.easyCamDidCapture?(image: uiImage)
                     self.semaphore.signal()
                 }
@@ -204,6 +281,133 @@ extension EasyCamViewController : AVCaptureVideoDataOutputSampleBufferDelegate {
     }
     
 }
+
+extension EasyCamViewController {
+    
+    internal func addObservers() {
+        let keyValueObservation = session.observe(\.isRunning, options: .new) { _, change in
+            guard let isSessionRunning = change.newValue else { return }
+            
+            // Only enable the ability to change camera if the device has more than one camera.
+            self.hasMultipleCameras = isSessionRunning && EasyCamViewController.getCameraDevices().count > 1
+            
+        }
+        
+        keyValueObservations.append(keyValueObservation)
+        
+        NotificationCenter.default.addObserver(self, selector: #selector(subjectAreaDidChange), name: .AVCaptureDeviceSubjectAreaDidChange, object: videoDeviceInput.device)
+        NotificationCenter.default.addObserver(self, selector: #selector(sessionRuntimeError), name: .AVCaptureSessionRuntimeError, object: session)
+        
+        /*
+         A session can only run when the app is full screen. It will be interrupted
+         in a multi-app layout, introduced in iOS 9, see also the documentation of
+         AVCaptureSessionInterruptionReason. Add observers to handle these session
+         interruptions and show a preview is paused message. See the documentation
+         of AVCaptureSessionWasInterruptedNotification for other interruption reasons.
+         */
+        NotificationCenter.default.addObserver(self, selector: #selector(sessionWasInterrupted), name: .AVCaptureSessionWasInterrupted, object: session)
+        NotificationCenter.default.addObserver(self, selector: #selector(sessionInterruptionEnded), name: .AVCaptureSessionInterruptionEnded, object: session)
+    }
+    
+    internal func removeObservers() {
+        NotificationCenter.default.removeObserver(self)
+        for kvObserver in keyValueObservations {
+            kvObserver.invalidate()
+        }
+        keyValueObservations.removeAll()
+    }
+    
+    @objc func sessionWasInterrupted(notification: NSNotification) {
+        debugPrint("sessionWasInterrupted")
+    }
+    
+    @objc func sessionInterruptionEnded(notification: NSNotification) {
+        debugPrint("sessionInterruptionEnded")
+    }
+    
+    @objc func subjectAreaDidChange(notification: NSNotification) {
+        debugPrint("subjectAreaDidChange")
+        let devicePoint = CGPoint(x: 0.5, y: 0.5)
+        focus(with: AVCaptureDevice.FocusMode.continuousAutoFocus, exposureMode: AVCaptureDevice.ExposureMode.continuousAutoExposure, at: devicePoint, monitorSubjectAreaChange: false)
+    }
+    
+    @objc func sessionRuntimeError(notification: NSNotification) {
+        debugPrint("sessionRuntimeError");
+        guard let error = notification.userInfo?[AVCaptureSessionErrorKey] as? AVError else { return }
+        
+        print("Capture session runtime error: \(error)")
+        
+        /*
+         Automatically try to restart the session running if media services were
+         reset and the last start running succeeded. Otherwise, enable the user
+         to try to resume the session running.
+         */
+        if error.code == .mediaServicesWereReset {
+            sessionQueue.async {
+                if self.sessionIsRunning {
+                    self.session.startRunning()
+                    self.sessionIsRunning = self.session.isRunning
+                }
+            }
+        } else {
+            self.mainQueue.async {
+                self.delegate?.easyCamDidFail(error: error)
+            }
+        }
+    }
+
+}
+extension EasyCamViewController {
+    
+    public override func viewWillTransition(to size: CGSize, with coordinator: UIViewControllerTransitionCoordinator) {
+        super.viewWillTransition(to: size, with: coordinator);
+        var videoOrientation = self.frameView.previewView.videoPreviewLayer.connection?.videoOrientation;
+        
+        switch UIDevice.current.orientation {
+        case .landscapeLeft:
+            videoOrientation = AVCaptureVideoOrientation.landscapeRight;
+        case .landscapeRight:
+            videoOrientation = AVCaptureVideoOrientation.landscapeLeft;
+        default:
+            videoOrientation = AVCaptureVideoOrientation.portrait
+        }
+        
+        self.mainQueue.async {
+            self.frameView.frame = CGRect(x: 0, y: 0, width: size.width, height: size.height);
+            self.view.layoutIfNeeded()
+            self.frameView.previewView.videoPreviewLayer.connection?.videoOrientation = videoOrientation!
+        }
+    }
+    
+    private func focus(with focusMode: AVCaptureDevice.FocusMode, exposureMode: AVCaptureDevice.ExposureMode, at devicePoint: CGPoint, monitorSubjectAreaChange: Bool) {
+        sessionQueue.async {
+            let device = self.videoDeviceInput.device
+            do {
+                try device.lockForConfiguration()
+                
+                /*
+                 Setting (focus/exposure)PointOfInterest alone does not initiate a (focus/exposure) operation.
+                 Call set(Focus/Exposure)Mode() to apply the new point of interest.
+                 */
+                if device.isFocusPointOfInterestSupported && device.isFocusModeSupported(focusMode) {
+                    device.focusPointOfInterest = devicePoint
+                    device.focusMode = focusMode
+                }
+                
+                if device.isExposurePointOfInterestSupported && device.isExposureModeSupported(exposureMode) {
+                    device.exposurePointOfInterest = devicePoint
+                    device.exposureMode = exposureMode
+                }
+                
+                device.isSubjectAreaChangeMonitoringEnabled = monitorSubjectAreaChange
+                device.unlockForConfiguration()
+            } catch {
+                print("Could not lock device for configuration: \(error)")
+            }
+        }
+    }
+}
+
 
 extension EasyCamViewController {
     
@@ -218,7 +422,12 @@ extension EasyCamViewController {
         return nil;
     }
     
+    class func getCameraDevices() -> [AVCaptureDevice] {
+        return AVCaptureDevice.DiscoverySession(deviceTypes: [.builtInWideAngleCamera, .builtInDuoCamera],                                                                                   mediaType: .video, position: .unspecified).devices;
+    }
+    
 }
+
 
 //MARK : EasyCamControlsDelegate protocol
 
@@ -236,14 +445,14 @@ extension EasyCamViewController : EasyCamControlsDelegate {
     public func stop() {
         if self.sessionIsRunning {
             self.session.stopRunning()
-            self.sessionIsRunning = false
+            self.sessionIsRunning = self.session.isRunning
         }
     }
     
     public func resume() {
         if !self.sessionIsRunning {
             self.session.startRunning()
-            self.sessionIsRunning = true
+            self.sessionIsRunning = self.session.isRunning
         }
     }
     

@@ -8,6 +8,7 @@
 
 import UIKit
 import EasyCam
+import AVFoundation
 
 class ViewController: UIViewController {
 
@@ -27,14 +28,17 @@ class ViewController: UIViewController {
     }
     
     func initCameraWithDefaultConfiguration() {
-        let cam = EasyCamViewController()
+        
+        let captureSettings = EasyCamCaptureSettings(cameraPosition: AVCaptureDevice.Position.back, sessionPreset: AVCaptureSession.Preset.iFrame1280x720, videoGravity: EasyCamCaptureSettings.VideoGravity.resizeAspectFill);
+        
+        let cam = EasyCamViewController(captureSettings: captureSettings)
         cam.delegate = self;
         self.navigationController?.pushViewController(cam, animated: true)
     }
     
     func initCameraWithCustomView() {
         if let frameView = Bundle.main.loadNibNamed("CamFrameView", owner: self, options: nil)?.first as? EasyCamFrameView {
-            let cam = EasyCamViewController(frameView: frameView)
+            let cam = EasyCamViewController(frameView: frameView, captureSettings: nil)
             cam.delegate = self;
             self.navigationController?.pushViewController(cam, animated: true)
         }

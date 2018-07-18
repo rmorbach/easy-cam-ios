@@ -22,14 +22,8 @@ open class EasyCamFrameView: UIView {
  
     
     //MARK: IBAction methods
-    
-    
     @IBAction func resume(_ sender: UIBarButtonItem) {
-    
-        if (self.easyCamControlDelegate?.responds(to: #selector(self.easyCamControlDelegate?.resume)))! {
-            self.easyCamControlDelegate?.resume()
-        }
-        
+         self.easyCamControlDelegate?.resume()
     }
     
     @IBAction func stop(_ sender: UIBarButtonItem) {
