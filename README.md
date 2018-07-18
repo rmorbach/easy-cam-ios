@@ -3,11 +3,11 @@ A Cocoa Touch framework to facilitate the camera usage in iOS
 
 # Usage
 
-* Import the binary to your projeto
+* Import the binary to your project
 ```
 import EasyCam
 ```
-* Create a instance of EasyCamViewController using default configuration
+* Create an instance of EasyCamViewController using default configuration
 ```
 let cam = EasyCamViewController()
 cam.delegate = self;
