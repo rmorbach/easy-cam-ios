@@ -29,7 +29,7 @@ let captureSettings = EasyCamCaptureSettings(cameraPosition: AVCaptureDevice.Pos
 let cam = EasyCamViewController(captureSettings: captureSettings)
 cam.delegate = self;
 
-```swift
+```
 * Implement `EasyCamDelegate` protocol;
 
 
