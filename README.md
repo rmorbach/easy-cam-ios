@@ -37,8 +37,8 @@ cam.delegate = self;
 Obviously EasyCam needs access to the camera. Starting from iOS 10, apps that don’t provide a usage description for this permission would be rejected when submitted to the App Store.
 
 Add the follow key to your app’s info.plist file with text explaining to the user why those permissions are needed:
-```swift 
-NSCameraUsageDescription```
+`NSCameraUsageDescription`.
+
 Add a value to this key with a description of the goal of camera usage, for example: 
 
 "<app name> needs access to the camera to be able to recognize objects."
